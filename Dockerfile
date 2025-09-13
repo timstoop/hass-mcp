@@ -5,7 +5,7 @@ FROM ghcr.io/astral-sh/uv:0.6.6-python3.13-bookworm
 WORKDIR /app
 
 # Copy project files first (better layer caching)
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 COPY app/ ./app/
 
 # Set environment for MCP communication

@@ -1204,25 +1204,36 @@ async def get_history(entity_id: str, hours: int = 24) -> Dict[str, Any]:
 
 @mcp.tool()
 @async_handler("get_error_log")
-async def get_error_log() -> Dict[str, Any]:
+async def get_error_log(max_chars: int = 80000, tail_lines: Optional[int] = None) -> Dict[str, Any]:
     """
-    Get the Home Assistant error log for troubleshooting
-    
+    Get the Home Assistant error log for troubleshooting with size limits
+
+    Args:
+        max_chars: Maximum number of characters to return (default: 80000, ~20k tokens)
+        tail_lines: If specified, return only the last N lines instead of truncating by chars
+
     Returns:
         A dictionary containing:
-        - log_text: The full error log text
-        - error_count: Number of ERROR entries found
-        - warning_count: Number of WARNING entries found
-        - integration_mentions: Map of integration names to mention counts
+        - log_text: The error log text (truncated if necessary)
+        - error_count: Number of ERROR entries found (in full log)
+        - warning_count: Number of WARNING entries found (in full log)
+        - integration_mentions: Map of integration names to mention counts (in full log)
+        - truncated: Boolean indicating if log was truncated
+        - original_size: Size of the full log in characters
         - error: Error message if retrieval failed
-        
+
     Examples:
-        Returns errors, warnings count and integration mentions
+        max_chars=50000 - Get up to 50k characters
+        tail_lines=100 - Get only the last 100 lines
+        Returns errors, warnings count and integration mentions from full log
     Best Practices:
-        - Use this tool when troubleshooting specific Home Assistant errors
+        - Default settings provide safe token usage (~20k tokens max)
+        - Use tail_lines for recent logs, max_chars for size control
+        - Error/warning counts always reflect the full log
+        - Use truncated flag to know if you're seeing partial data
         - Look for patterns in repeated errors
         - Pay attention to timestamps to correlate errors with events
-        - Focus on integrations with many mentions in the log    
+        - Focus on integrations with many mentions in the log
     """
-    logger.info("Getting Home Assistant error log")
-    return await get_hass_error_log()
+    logger.info(f"Getting Home Assistant error log (max_chars={max_chars}, tail_lines={tail_lines})")
+    return await get_hass_error_log(max_chars=max_chars, tail_lines=tail_lines)

@@ -303,3 +303,42 @@ class TestMCPServer:
             # Verify the function call with lean=True parameter
             mock_get_state.assert_called_with("light.living_room", lean=True)
             assert result == mock_filtered
+
+    @pytest.mark.asyncio
+    async def test_get_error_log_truncation(self):
+        """Test the get_error_log function with size limitations"""
+        from app.server import get_error_log
+
+        # Mock a large error log (make it definitely larger than 80000 chars)
+        large_log = "ERROR: This is a very long error message with lots of details\n" * 2000
+        original_size = len(large_log)  # This will be > 80000
+
+        mock_log_response = {
+            "log_text": large_log[:80000] if original_size > 80000 else large_log,
+            "error_count": 2000,
+            "warning_count": 0,
+            "integration_mentions": {"mqtt": 100, "zwave": 50},
+            "truncated": original_size > 80000,
+            "original_size": original_size
+        }
+
+        with patch("app.server.get_hass_error_log", return_value=mock_log_response) as mock_get_log:
+            # Test with default parameters
+            result = await get_error_log()
+
+            # Verify the function was called with default parameters
+            mock_get_log.assert_called_with(max_chars=80000, tail_lines=None)
+
+            # Check response includes truncation info
+            assert result["truncated"] == True
+            assert result["original_size"] > 80000
+            assert result["error_count"] == 2000
+            assert result["warning_count"] == 0
+            assert len(result["log_text"]) <= 80000
+
+            # Test with custom parameters
+            mock_get_log.reset_mock()
+            result = await get_error_log(max_chars=50000, tail_lines=100)
+
+            # Verify the function was called with custom parameters
+            mock_get_log.assert_called_with(max_chars=50000, tail_lines=100)

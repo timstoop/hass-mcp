@@ -439,49 +439,83 @@ async def restart_home_assistant() -> Dict[str, Any]:
     return await call_service("homeassistant", "restart", {})
 
 @handle_api_errors
-async def get_hass_error_log() -> Dict[str, Any]:
+async def get_hass_error_log(max_chars: int = 80000, tail_lines: Optional[int] = None) -> Dict[str, Any]:
     """
-    Get the Home Assistant error log for troubleshooting
-    
+    Get the Home Assistant error log for troubleshooting with size limits
+
+    Args:
+        max_chars: Maximum number of characters to return (default: 80000, ~20k tokens)
+        tail_lines: If specified, return only the last N lines instead of truncating by chars
+
     Returns:
         A dictionary containing:
-        - log_text: The full error log text
-        - error_count: Number of ERROR entries found
-        - warning_count: Number of WARNING entries found
-        - integration_mentions: Map of integration names to mention counts
+        - log_text: The error log text (truncated if necessary)
+        - error_count: Number of ERROR entries found (in full log)
+        - warning_count: Number of WARNING entries found (in full log)
+        - integration_mentions: Map of integration names to mention counts (in full log)
+        - truncated: Boolean indicating if log was truncated
+        - original_size: Size of the full log in characters
         - error: Error message if retrieval failed
     """
     try:
         # Call the Home Assistant API error_log endpoint
         url = f"{HA_URL}/api/error_log"
         headers = get_ha_headers()
-        
+
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=headers, timeout=30)
-            
+
             if response.status_code == 200:
-                log_text = response.text
-                
-                # Count errors and warnings
-                error_count = log_text.count("ERROR")
-                warning_count = log_text.count("WARNING")
-                
-                # Extract integration mentions
+                full_log_text = response.text
+                original_size = len(full_log_text)
+
+                # Always analyze the full log for counts and mentions
+                error_count = full_log_text.count("ERROR")
+                warning_count = full_log_text.count("WARNING")
+
+                # Extract integration mentions from full log
                 import re
                 integration_mentions = {}
-                
+
                 # Look for patterns like [mqtt], [zwave], etc.
-                for match in re.finditer(r'\[([a-zA-Z0-9_]+)\]', log_text):
+                for match in re.finditer(r'\[([a-zA-Z0-9_]+)\]', full_log_text):
                     integration = match.group(1).lower()
                     if integration not in integration_mentions:
                         integration_mentions[integration] = 0
                     integration_mentions[integration] += 1
-                
+
+                # Determine the log text to return
+                if tail_lines is not None:
+                    # Return last N lines
+                    lines = full_log_text.split('\n')
+                    if len(lines) > tail_lines:
+                        log_text = '\n'.join(lines[-tail_lines:])
+                        truncated = True
+                    else:
+                        log_text = full_log_text
+                        truncated = False
+                elif original_size > max_chars:
+                    # Truncate by character count, but try to keep recent entries
+                    # Take from the end to get most recent logs
+                    log_text = full_log_text[-max_chars:]
+                    # Try to start at a line boundary to avoid partial lines
+                    newline_pos = log_text.find('\n')
+                    if newline_pos > 0 and newline_pos < 1000:  # Only if reasonably close to start
+                        log_text = log_text[newline_pos + 1:]
+                    truncated = True
+                    # Add truncation notice
+                    log_text = f"[LOG TRUNCATED - Showing last {len(log_text)} chars of {original_size} total chars]\n\n{log_text}"
+                else:
+                    log_text = full_log_text
+                    truncated = False
+
                 return {
                     "log_text": log_text,
                     "error_count": error_count,
                     "warning_count": warning_count,
-                    "integration_mentions": integration_mentions
+                    "integration_mentions": integration_mentions,
+                    "truncated": truncated,
+                    "original_size": original_size
                 }
             else:
                 return {
@@ -490,7 +524,9 @@ async def get_hass_error_log() -> Dict[str, Any]:
                     "log_text": "",
                     "error_count": 0,
                     "warning_count": 0,
-                    "integration_mentions": {}
+                    "integration_mentions": {},
+                    "truncated": False,
+                    "original_size": 0
                 }
     except Exception as e:
         logger.error(f"Error retrieving Home Assistant error log: {str(e)}")
@@ -499,7 +535,9 @@ async def get_hass_error_log() -> Dict[str, Any]:
             "log_text": "",
             "error_count": 0,
             "warning_count": 0,
-            "integration_mentions": {}
+            "integration_mentions": {},
+            "truncated": False,
+            "original_size": 0
         }
 
 @handle_api_errors

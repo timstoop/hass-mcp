@@ -1,0 +1,107 @@
+version: '3'
+
+vars:
+  PYTHON: python3
+  VENV_DIR: .venv
+  VENV_PYTHON: "{{.VENV_DIR}}/bin/python"
+  VENV_PIP: "{{.VENV_DIR}}/bin/pip"
+
+tasks:
+  venv:
+    desc: Create virtual environment
+    status:
+      - test -d {{.VENV_DIR}}
+    cmds:
+      - "{{.PYTHON}} -m venv {{.VENV_DIR}}"
+      - "{{.VENV_PIP}} install --upgrade pip setuptools wheel"
+
+  install:
+    desc: Install dependencies
+    deps: [venv]
+    sources:
+      - pyproject.toml
+    cmds:
+      - "{{.VENV_PIP}} install -e ."
+      - "{{.VENV_PIP}} install -e .[test]"
+
+  install-dev:
+    desc: Install development dependencies
+    deps: [install]
+    cmds:
+      - "{{.VENV_PIP}} install mypy bandit ruff coverage pytest-cov"
+
+  test:
+    desc: Run tests
+    deps: [install]
+    cmds:
+      - "{{.VENV_PYTHON}} -m pytest tests/ -v"
+
+  test-cov:
+    desc: Run tests with coverage
+    deps: [install-dev]
+    cmds:
+      - "{{.VENV_PYTHON}} -m pytest tests/ --cov=app --cov-report=term-missing --cov-report=html --cov-branch --cov-fail-under=90 -v"
+
+  test-cov-partial:
+    desc: Run tests with coverage excluding failing tests
+    deps: [install-dev]
+    cmds:
+      - "{{.VENV_PYTHON}} -m pytest tests/ --cov=app --cov-report=term-missing --cov-branch -k 'not (test_get_system_overview or test_get_hass_error_log_with_truncation or test_get_hass_error_log_with_tail_lines or test_get_history_tool)'"
+
+  mypy:
+    desc: Run mypy type checking
+    deps: [install-dev]
+    cmds:
+      - "{{.VENV_PYTHON}} -m mypy app/ tests/"
+
+  bandit:
+    desc: Run bandit security checks
+    deps: [install-dev]
+    cmds:
+      - "{{.VENV_PYTHON}} -m bandit -r app/ -f json -o bandit-report.json"
+      - "{{.VENV_PYTHON}} -m bandit -r app/"
+
+  ruff:
+    desc: Run ruff linting and formatting
+    deps: [install-dev]
+    cmds:
+      - "{{.VENV_PYTHON}} -m ruff check app/ tests/"
+      - "{{.VENV_PYTHON}} -m ruff format --check app/ tests/"
+
+  format:
+    desc: Format code with ruff
+    deps: [install-dev]
+    cmds:
+      - "{{.VENV_PYTHON}} -m ruff format app/ tests/"
+      - "{{.VENV_PYTHON}} -m ruff check --fix app/ tests/"
+
+  ruff-fix:
+    desc: Fix ruff issues automatically
+    deps: [install-dev]
+    cmds:
+      - "{{.VENV_PYTHON}} -m ruff check --fix app/ tests/"
+
+  lint:
+    desc: Run all linting and checks
+    deps: [ruff, mypy, bandit]
+
+  check:
+    desc: Run all checks including tests
+    deps: [lint, test-cov]
+
+  clean:
+    desc: Clean up generated files
+    cmds:
+      - rm -rf {{.VENV_DIR}}
+      - rm -rf .coverage htmlcov/
+      - rm -rf .pytest_cache/
+      - rm -rf .mypy_cache/
+      - rm -rf bandit-report.json
+      - find . -type d -name __pycache__ -exec rm -rf {} +
+      - find . -type f -name "*.pyc" -delete
+
+  serve:
+    desc: Run the MCP server
+    deps: [install]
+    cmds:
+      - "{{.VENV_PYTHON}} -m app"

@@ -274,4 +274,47 @@ class TestHassAPI:
             # Verify the result is the expected dict format
             assert isinstance(result, dict), f"Expected dict, got {type(result)}"
             assert "error" in result, f"Expected 'error' key in result: {result}"
-            assert "HTTP error: 400 - Bad Request" in result["error"]
+            assert "HTTP 400 - Bad Request" in result["error"]
+            # Should contain helpful suggestions for 400 errors
+            assert "Possible causes:" in result["error"]
+
+    async def test_detailed_http_error_messages(self):
+        """Test that HTTP errors provide detailed, helpful error messages."""
+        from typing import Any
+        from unittest.mock import MagicMock, patch
+
+        import httpx
+
+        # Test 400 error with service not found
+        with patch("app.hass.HA_TOKEN", "fake_token"):
+
+            @handle_api_errors
+            async def mock_service_not_found() -> dict[str, Any]:
+                """Mock function that simulates service not found error."""
+                response = MagicMock()
+                response.status_code = 400
+                response.reason_phrase = "Bad Request"
+                response.text = "Service homeassistant.remove_entity does not exist"
+                raise httpx.HTTPStatusError("HTTP error", request=MagicMock(), response=response)
+
+            result = await mock_service_not_found()
+            assert "service" in result["error"].lower()
+            assert "doesn't exist" in result["error"]
+            assert "Common service naming pattern" in result["error"]
+
+        # Test 500 error
+        with patch("app.hass.HA_TOKEN", "fake_token"):
+
+            @handle_api_errors
+            async def mock_server_error() -> dict[str, Any]:
+                """Mock function that simulates server error."""
+                response = MagicMock()
+                response.status_code = 500
+                response.reason_phrase = "Internal Server Error"
+                response.text = "Internal server error occurred"
+                raise httpx.HTTPStatusError("HTTP error", request=MagicMock(), response=response)
+
+            result = await mock_server_error()
+            assert "HTTP 500 - Internal Server Error" in result["error"]
+            assert "Internal server error in Home Assistant" in result["error"]
+            assert "Check Home Assistant logs" in result["error"]

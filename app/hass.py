@@ -83,6 +83,84 @@ def _get_error_formatter(return_type: Any) -> Callable[[str], Any]:
     return format_error
 
 
+def _get_400_error_suggestions(response_text: str) -> list[str]:
+    """Get specific suggestions for 400 Bad Request errors based on response content."""
+    suggestions = []
+    response_lower = response_text.lower()
+
+    if "service" in response_lower and (
+        "not found" in response_lower or "does not exist" in response_lower
+    ):
+        suggestions.extend(
+            [
+                "The service you're trying to call doesn't exist in Home Assistant",
+                "Check available services using the domain's service list",
+                "Common service naming pattern: domain.service_name (e.g., 'light.turn_on', not 'light.on')",
+            ]
+        )
+
+    if "entity" in response_lower and (
+        "not found" in response_lower or "unknown" in response_lower
+    ):
+        suggestions.extend(
+            [
+                "The entity_id doesn't exist or is unavailable",
+                "Verify the entity exists using the entities list",
+                "Check if the entity is enabled and not disabled",
+            ]
+        )
+
+    if "validation" in response_lower or "invalid" in response_lower:
+        suggestions.extend(
+            [
+                "Invalid parameters or data format provided",
+                "Check the service documentation for required parameters",
+                "Verify parameter types and value ranges",
+            ]
+        )
+
+    if "permission" in response_lower or "unauthorized" in response_lower:
+        suggestions.extend(
+            [
+                "Insufficient permissions for this operation",
+                "Check if the API token has the required permissions",
+            ]
+        )
+
+    # Default 400 suggestions if no specific patterns found
+    if not suggestions:
+        suggestions = [
+            "Invalid request - check service name, entity_id, and parameters",
+            "Common issues: non-existent service, invalid entity_id, wrong parameter format",
+            "Verify the service exists and accepts the provided parameters",
+        ]
+
+    return suggestions
+
+
+def _get_detailed_http_error_message(status_code: int, reason: str, response_text: str) -> str:
+    """Generate detailed error messages with context and suggestions for common HTTP errors."""
+    base_msg = f"HTTP {status_code} - {reason}"
+
+    # Define error messages for each status code
+    error_messages = {
+        400: lambda: f"{base_msg}. Possible causes: {'; '.join(_get_400_error_suggestions(response_text))}",
+        401: lambda: f"{base_msg}. Authentication failed. Check if your Home Assistant token is valid and not expired.",
+        403: lambda: f"{base_msg}. Access forbidden. Your token may lack the necessary permissions for this operation.",
+        404: lambda: f"{base_msg}. The API endpoint doesn't exist. Check if you're using the correct Home Assistant API URL and endpoint path.",
+        500: lambda: f"{base_msg}. Possible causes: {'; '.join([
+            'Internal server error in Home Assistant',
+            'This could be due to integration issues, resource constraints, or bugs',
+            'Check Home Assistant logs for more details',
+            'Try the operation again after a brief wait',
+            'If persistent, this may indicate a problem with the Home Assistant installation or specific integration'
+        ])}",
+        503: lambda: f"{base_msg}. Service unavailable. Home Assistant may be starting up, updating, or overloaded.",
+    }
+
+    return error_messages.get(status_code, lambda: f"{base_msg}. Unexpected HTTP error occurred.")()
+
+
 def _handle_http_exceptions(format_error: Callable[[str], Any]) -> Callable[[Exception], Any]:
     """Handle HTTP exceptions and return formatted errors."""
 
@@ -94,9 +172,16 @@ def _handle_http_exceptions(format_error: Callable[[str], Any]) -> Callable[[Exc
                 f"Timeout error: Home Assistant at {HA_URL} did not respond in time"
             )
         elif isinstance(e, httpx.HTTPStatusError):
-            return format_error(
-                f"HTTP error: {e.response.status_code} - {e.response.reason_phrase}"
+            # Get response text for additional context
+            try:
+                response_text = e.response.text
+            except Exception:
+                response_text = ""
+
+            detailed_msg = _get_detailed_http_error_message(
+                e.response.status_code, e.response.reason_phrase, response_text
             )
+            return format_error(detailed_msg)
         elif isinstance(e, httpx.RequestError):
             return format_error(f"Error connecting to Home Assistant: {e!s}")
         else:

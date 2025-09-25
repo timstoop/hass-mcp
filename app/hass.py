@@ -337,7 +337,14 @@ async def call_service(
 
     # Note: Cache invalidation would go here if we had entity caching
 
-    return cast("dict[str, Any]", response.json())
+    json_response = response.json()
+
+    # Handle cases where Home Assistant returns a list instead of dict
+    # This can happen with services like automation.trigger
+    if isinstance(json_response, list):
+        return {"result": json_response}
+
+    return cast("dict[str, Any]", json_response)
 
 
 @handle_api_errors

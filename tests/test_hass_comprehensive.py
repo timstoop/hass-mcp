@@ -187,8 +187,13 @@ class TestHassComprehensive:
                     result = await call_service("automation", "reload", None)
                     assert result["success"] is True
 
+                    # Test service call that returns list (like automation.trigger)
+                    mock_response.json.return_value = []
+                    result = await call_service("automation", "trigger", {"entity_id": "automation.test"})
+                    assert result == {"result": []}
+
                     # Verify correct API calls
-                    assert mock_client.post.call_count == 3
+                    assert mock_client.post.call_count == 4
 
     @pytest.mark.asyncio
     async def test_summarize_domain_comprehensive(self, mock_config):

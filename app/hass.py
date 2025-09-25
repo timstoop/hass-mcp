@@ -17,8 +17,31 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
 
+
 # HTTP client
-_client: httpx.AsyncClient | None = None
+class ClientManager:
+    """Manages a single HTTP client instance for the application."""
+
+    def __init__(self) -> None:
+        self._client: httpx.AsyncClient | None = None
+
+    async def get_client(self) -> httpx.AsyncClient:
+        """Get a persistent httpx client for Home Assistant API calls"""
+        if self._client is None:
+            logger.debug("Creating new HTTP client")
+            self._client = httpx.AsyncClient(timeout=10.0)
+        return self._client
+
+    async def cleanup_client(self) -> None:
+        """Close the HTTP client when shutting down"""
+        if self._client:
+            logger.debug("Closing HTTP client")
+            await self._client.aclose()
+            self._client = None
+
+
+# Global client manager instance
+_client_manager = ClientManager()
 
 # Default field sets for different verbosity levels
 # Lean fields for standard requests (optimized for token efficiency)
@@ -44,7 +67,45 @@ DOMAIN_IMPORTANT_ATTRIBUTES = {
 }
 
 
-def handle_api_errors[F](func: F) -> F:
+def _get_error_formatter(return_type: Any) -> Callable[[str], Any]:
+    """Get the appropriate error formatter based on return type."""
+    is_dict_return = "Dict" in str(return_type) or "dict" in str(return_type)
+    is_list_return = "List" in str(return_type) or "list" in str(return_type)
+
+    def format_error(msg: str) -> Any:
+        if is_dict_return:
+            return {"error": msg}
+        elif is_list_return:
+            return [{"error": msg}]
+        else:
+            return msg
+
+    return format_error
+
+
+def _handle_http_exceptions(format_error: Callable[[str], Any]) -> Callable[[Exception], Any]:
+    """Handle HTTP exceptions and return formatted errors."""
+
+    def handle_exception(e: Exception) -> Any:
+        if isinstance(e, httpx.ConnectError):
+            return format_error(f"Connection error: Cannot connect to Home Assistant at {HA_URL}")
+        elif isinstance(e, httpx.TimeoutException):
+            return format_error(
+                f"Timeout error: Home Assistant at {HA_URL} did not respond in time"
+            )
+        elif isinstance(e, httpx.HTTPStatusError):
+            return format_error(
+                f"HTTP error: {e.response.status_code} - {e.response.reason_phrase}"
+            )
+        elif isinstance(e, httpx.RequestError):
+            return format_error(f"Error connecting to Home Assistant: {e!s}")
+        else:
+            return format_error(f"Unexpected error: {e!s}")
+
+    return handle_exception
+
+
+def handle_api_errors(func: F) -> F:
     """
     Decorator to handle common error cases for Home Assistant API calls
 
@@ -59,62 +120,31 @@ def handle_api_errors[F](func: F) -> F:
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
         # Determine return type from function annotation
         return_type = inspect.signature(func).return_annotation
-        is_dict_return = "Dict" in str(return_type)
-        is_list_return = "List" in str(return_type)
+        format_error = _get_error_formatter(return_type)
+        handle_exception = _handle_http_exceptions(format_error)
 
-        # Prepare error formatters based on return type
-        def format_error(msg: str) -> Any:
-            if is_dict_return:
-                return {"error": msg}
-            elif is_list_return:
-                return [{"error": msg}]
-            else:
-                return msg
+        # Check if token is available
+        if not HA_TOKEN:
+            return format_error(
+                "No Home Assistant token provided. Please set HA_TOKEN in .env file."
+            )
 
         try:
-            # Check if token is available
-            if not HA_TOKEN:
-                return format_error(
-                    "No Home Assistant token provided. Please set HA_TOKEN in .env file."
-                )
-
-            # Call the original function
             return await func(*args, **kwargs)
-        except httpx.ConnectError:
-            return format_error(f"Connection error: Cannot connect to Home Assistant at {HA_URL}")
-        except httpx.TimeoutException:
-            return format_error(
-                f"Timeout error: Home Assistant at {HA_URL} did not respond in time"
-            )
-        except httpx.HTTPStatusError as e:
-            return format_error(
-                f"HTTP error: {e.response.status_code} - {e.response.reason_phrase}"
-            )
-        except httpx.RequestError as e:
-            return format_error(f"Error connecting to Home Assistant: {e!s}")
         except Exception as e:
-            return format_error(f"Unexpected error: {e!s}")
+            return handle_exception(e)
 
     return cast("F", wrapper)
 
 
-# Persistent HTTP client
 async def get_client() -> httpx.AsyncClient:
     """Get a persistent httpx client for Home Assistant API calls"""
-    global _client
-    if _client is None:
-        logger.debug("Creating new HTTP client")
-        _client = httpx.AsyncClient(timeout=10.0)
-    return _client
+    return await _client_manager.get_client()
 
 
 async def cleanup_client() -> None:
     """Close the HTTP client when shutting down"""
-    global _client
-    if _client:
-        logger.debug("Closing HTTP client")
-        await _client.aclose()
-        _client = None
+    await _client_manager.cleanup_client()
 
 
 # Direct entity retrieval function
@@ -226,6 +256,74 @@ async def get_entity_state(
         return entity_data
 
 
+def _filter_entities_by_search(
+    entities: list[dict[str, Any]], search_query: str
+) -> list[dict[str, Any]]:
+    """Filter entities by search query."""
+    search_term = search_query.lower().strip()
+    filtered_entities = []
+
+    for entity in entities:
+        # Search in entity_id
+        if search_term in entity["entity_id"].lower():
+            filtered_entities.append(entity)
+            continue
+
+        # Search in friendly_name
+        friendly_name = entity.get("attributes", {}).get("friendly_name", "").lower()
+        if friendly_name and search_term in friendly_name:
+            filtered_entities.append(entity)
+            continue
+
+        # Search in other common attributes (state, area_id, etc.)
+        if search_term in entity.get("state", "").lower():
+            filtered_entities.append(entity)
+            continue
+
+        # Search in other attributes
+        for _attr_name, attr_value in entity.get("attributes", {}).items():
+            # Check if attribute value can be converted to string
+            if (
+                isinstance(attr_value, str | int | float | bool)
+                and search_term in str(attr_value).lower()
+            ):
+                filtered_entities.append(entity)
+                break
+
+    return filtered_entities
+
+
+def _apply_field_filtering(
+    entities: list[dict[str, Any]], fields: list[str] | None, lean: bool
+) -> list[dict[str, Any]]:
+    """Apply field filtering to entities."""
+    if fields:
+        # Use explicit field list when provided
+        return [filter_fields(entity, fields) for entity in entities]
+    elif lean:
+        # Apply domain-specific lean fields to each entity
+        result = []
+        for entity in entities:
+            # Get the entity's domain
+            entity_domain = entity["entity_id"].split(".")[0]
+
+            # Start with basic lean fields
+            lean_fields = DEFAULT_LEAN_FIELDS.copy()
+
+            # Add domain-specific important attributes
+            if entity_domain in DOMAIN_IMPORTANT_ATTRIBUTES:
+                for attr in DOMAIN_IMPORTANT_ATTRIBUTES[entity_domain]:
+                    lean_fields.append(f"attr.{attr}")
+
+            # Filter and add to result
+            result.append(filter_fields(entity, lean_fields))
+
+        return result
+    else:
+        # Return full entities
+        return entities
+
+
 @handle_api_errors
 async def get_entities(
     domain: str | None = None,
@@ -260,65 +358,14 @@ async def get_entities(
 
     # Search if query is provided
     if search_query and search_query.strip():
-        search_term = search_query.lower().strip()
-        filtered_entities = []
-
-        for entity in entities:
-            # Search in entity_id
-            if search_term in entity["entity_id"].lower():
-                filtered_entities.append(entity)
-                continue
-
-            # Search in friendly_name
-            friendly_name = entity.get("attributes", {}).get("friendly_name", "").lower()
-            if friendly_name and search_term in friendly_name:
-                filtered_entities.append(entity)
-                continue
-
-            # Search in other common attributes (state, area_id, etc.)
-            if search_term in entity.get("state", "").lower():
-                filtered_entities.append(entity)
-                continue
-
-            # Search in other attributes
-            for _attr_name, attr_value in entity.get("attributes", {}).items():
-                # Check if attribute value can be converted to string
-                if isinstance(attr_value, (str, int, float, bool)) and search_term in str(attr_value).lower():
-                    filtered_entities.append(entity)
-                    break
-
-        entities = filtered_entities
+        entities = _filter_entities_by_search(entities, search_query)
 
     # Apply the limit
     if limit > 0 and len(entities) > limit:
         entities = entities[:limit]
 
-    # Apply field filtering if requested
-    if fields:
-        # Use explicit field list when provided
-        return [filter_fields(entity, fields) for entity in entities]
-    elif lean:
-        # Apply domain-specific lean fields to each entity
-        result = []
-        for entity in entities:
-            # Get the entity's domain
-            entity_domain = entity["entity_id"].split(".")[0]
-
-            # Start with basic lean fields
-            lean_fields = DEFAULT_LEAN_FIELDS.copy()
-
-            # Add domain-specific important attributes
-            if entity_domain in DOMAIN_IMPORTANT_ATTRIBUTES:
-                for attr in DOMAIN_IMPORTANT_ATTRIBUTES[entity_domain]:
-                    lean_fields.append(f"attr.{attr}")
-
-            # Filter and add to result
-            result.append(filter_fields(entity, lean_fields))
-
-        return result
-    else:
-        # Return full entities
-        return entities
+    # Apply field filtering
+    return _apply_field_filtering(entities, fields, lean)
 
 
 @handle_api_errors
@@ -494,7 +541,7 @@ async def get_hass_error_log(
         url = f"{HA_URL}/api/error_log"
         headers = get_ha_headers()
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url, headers=headers, timeout=30)
 
             if response.status_code == 200:
@@ -613,6 +660,65 @@ async def get_entity_history(entity_id: str, hours: int) -> list[dict[str, Any]]
     return cast("list[dict[str, Any]]", response.json())
 
 
+def _group_entities_by_domain(entities: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Group entities by their domain."""
+    domain_entities: dict[str, list[dict[str, Any]]] = {}
+    for entity in entities:
+        domain = entity["entity_id"].split(".")[0]
+        if domain not in domain_entities:
+            domain_entities[domain] = []
+        domain_entities[domain].append(entity)
+    return domain_entities
+
+
+def _create_domain_statistics(domain_entities: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """Create domain statistics including state distributions."""
+    domains = {}
+    for domain, entities in domain_entities.items():
+        # Count states for this domain
+        state_counts: dict[str, int] = {}
+        for entity in entities:
+            state = entity.get("state", "unknown")
+            state_counts[state] = state_counts.get(state, 0) + 1
+
+        domains[domain] = {
+            "count": len(entities),
+            "state_distribution": state_counts,
+        }
+    return domains
+
+
+def _create_domain_samples(
+    domain_entities: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Create sample entities for each domain (2-3 per domain)."""
+    domain_samples = {}
+    for domain, entities in domain_entities.items():
+        # Take up to 3 sample entities
+        domain_samples[domain] = entities[:3]
+    return domain_samples
+
+
+def _analyze_domain_attributes(
+    domain_entities: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[tuple[str, int]]]:
+    """Analyze common attributes for each domain."""
+    domain_attributes = {}
+    for domain, entities in domain_entities.items():
+        # Count attribute frequency
+        attr_counts: dict[str, int] = {}
+        for entity in entities:
+            attributes = entity.get("attributes", {})
+            for attr_name in attributes:
+                attr_counts[attr_name] = attr_counts.get(attr_name, 0) + 1
+
+        # Sort by frequency and take top 10
+        top_attrs = sorted(attr_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        domain_attributes[domain] = top_attrs
+
+    return domain_attributes
+
+
 @handle_api_errors
 async def get_system_overview() -> dict[str, Any]:
     """
@@ -626,115 +732,23 @@ async def get_system_overview() -> dict[str, Any]:
         - domain_attributes: Common attributes for each domain
         - area_distribution: Entities grouped by area (if available)
     """
-    try:
-        # Get ALL entities with minimal fields for efficiency
-        # We retrieve all entities since API calls don't consume tokens, only responses do
-        client = await get_client()
-        response = await client.get(f"{HA_URL}/api/states", headers=get_ha_headers())
-        response.raise_for_status()
-        all_entities_raw = cast("list[dict[str, Any]]", response.json())
+    # Get ALL entities with minimal fields for efficiency
+    client = await get_client()
+    response = await client.get(f"{HA_URL}/api/states", headers=get_ha_headers())
+    response.raise_for_status()
+    all_entities_raw = cast("list[dict[str, Any]]", response.json())
 
-        # Apply lean formatting to reduce token usage in the response
-        all_entities = []
-        for entity in all_entities_raw:
-            domain = entity["entity_id"].split(".")[0]
+    # Apply lean formatting to reduce token usage in the response
+    all_entities = _apply_field_filtering(all_entities_raw, None, True)
 
-            # Start with basic lean fields
-            lean_fields = ["entity_id", "state", "attr.friendly_name"]
+    # Group entities by domain
+    domain_entities = _group_entities_by_domain(all_entities)
 
-            # Add domain-specific important attributes
-            if domain in DOMAIN_IMPORTANT_ATTRIBUTES:
-                for attr in DOMAIN_IMPORTANT_ATTRIBUTES[domain]:
-                    lean_fields.append(f"attr.{attr}")
-
-            # Filter and add to result
-            all_entities.append(filter_fields(entity, lean_fields))
-
-        # Initialize overview structure
-        overview: dict[str, Any] = {
-            "total_entities": len(all_entities),
-            "domains": {},
-            "domain_samples": {},
-            "domain_attributes": {},
-            "area_distribution": {},
-        }
-
-        # Group entities by domain
-        domain_entities: dict[str, list[dict[str, Any]]] = {}
-        for entity in all_entities:
-            domain = entity["entity_id"].split(".")[0]
-            if domain not in domain_entities:
-                domain_entities[domain] = []
-            domain_entities[domain].append(entity)
-
-        # Process each domain
-        for domain, entities in domain_entities.items():
-            # Count entities in this domain
-            count = len(entities)
-
-            # Collect state distribution
-            state_distribution = {}
-            for entity in entities:
-                state = entity.get("state", "unknown")
-                if state not in state_distribution:
-                    state_distribution[state] = 0
-                state_distribution[state] += 1
-
-            # Store domain information
-            overview["domains"][domain] = {"count": count, "states": state_distribution}
-
-            # Select representative samples (2-3 per domain)
-            sample_limit = min(3, count)
-            samples = []
-            for i in range(sample_limit):
-                entity = entities[i]
-                samples.append(
-                    {
-                        "entity_id": entity["entity_id"],
-                        "state": entity.get("state", "unknown"),
-                        "friendly_name": entity.get("attributes", {}).get(
-                            "friendly_name", entity["entity_id"]
-                        ),
-                    }
-                )
-            overview["domain_samples"][domain] = samples
-
-            # Collect common attributes for this domain
-            attribute_counts = {}
-            for entity in entities:
-                for attr in entity.get("attributes", {}):
-                    if attr not in attribute_counts:
-                        attribute_counts[attr] = 0
-                    attribute_counts[attr] += 1
-
-            # Get top 5 most common attributes for this domain
-            common_attributes = sorted(attribute_counts.items(), key=lambda x: x[1], reverse=True)[
-                :5
-            ]
-            overview["domain_attributes"][domain] = [attr for attr, count in common_attributes]
-
-            # Group by area if available
-            for entity in entities:
-                area_id = entity.get("attributes", {}).get("area_id", "Unknown")
-                area_name = entity.get("attributes", {}).get("area_name", area_id)
-
-                if area_name not in overview["area_distribution"]:
-                    overview["area_distribution"][area_name] = {}
-
-                if domain not in overview["area_distribution"][area_name]:
-                    overview["area_distribution"][area_name][domain] = 0
-
-                overview["area_distribution"][area_name][domain] += 1
-
-        # Add summary information
-        overview["domain_count"] = len(domain_entities)
-        overview["most_common_domains"] = sorted(
-            [(domain, len(entities)) for domain, entities in domain_entities.items()],
-            key=lambda x: x[1],
-            reverse=True,
-        )[:5]
-
-        return overview
-    except Exception as e:
-        logger.error(f"Error generating system overview: {e!s}")
-        return {"error": f"Error generating system overview: {e!s}"}
+    # Build overview using helper functions
+    return {
+        "total_entities": len(all_entities),
+        "domains": _create_domain_statistics(domain_entities),
+        "domain_samples": _create_domain_samples(domain_entities),
+        "domain_attributes": _analyze_domain_attributes(domain_entities),
+        "area_distribution": {},  # Could be implemented later if needed
+    }

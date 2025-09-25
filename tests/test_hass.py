@@ -33,20 +33,22 @@ class TestHassAPI:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         # Setup client mocking
-        with patch("app.hass.get_client", return_value=mock_client):
-            with patch("app.hass.HA_URL", mock_config["hass_url"]):
-                with patch("app.hass.HA_TOKEN", mock_config["hass_token"]):
-                    # Test function
-                    states = await get_entities()
+        with (
+            patch("app.hass.get_client", return_value=mock_client),
+            patch("app.hass.HA_URL", mock_config["hass_url"]),
+            patch("app.hass.HA_TOKEN", mock_config["hass_token"]),
+        ):
+            # Test function
+            states = await get_entities()
 
-                    # Assertions
-                    assert isinstance(states, list)
-                    assert len(states) == 2
+            # Assertions
+            assert isinstance(states, list)
+            assert len(states) == 2
 
-                    # Verify API was called correctly
-                    mock_client.get.assert_called_once()
-                    called_url = mock_client.get.call_args[0][0]
-                    assert called_url == f"{mock_config['hass_url']}/api/states"
+            # Verify API was called correctly
+            mock_client.get.assert_called_once()
+            called_url = mock_client.get.call_args[0][0]
+            assert called_url == f"{mock_config['hass_url']}/api/states"
 
     @pytest.mark.asyncio
     async def test_get_entity_state(self, mock_config):
@@ -64,21 +66,23 @@ class TestHassAPI:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         # Patch the client
-        with patch("app.hass.get_client", return_value=mock_client):
-            with patch("app.hass.HA_URL", mock_config["hass_url"]):
-                with patch("app.hass.HA_TOKEN", mock_config["hass_token"]):
-                    # Test function - use_cache parameter has been removed
-                    state = await get_entity_state("light.living_room")
+        with (
+            patch("app.hass.get_client", return_value=mock_client),
+            patch("app.hass.HA_URL", mock_config["hass_url"]),
+            patch("app.hass.HA_TOKEN", mock_config["hass_token"]),
+        ):
+            # Test function - use_cache parameter has been removed
+            state = await get_entity_state("light.living_room")
 
-                    # Assertions
-                    assert isinstance(state, dict)
-                    assert state["entity_id"] == "light.living_room"
-                    assert state["state"] == "on"
+            # Assertions
+            assert isinstance(state, dict)
+            assert state["entity_id"] == "light.living_room"
+            assert state["state"] == "on"
 
-                    # Verify API was called correctly
-                    mock_client.get.assert_called_once()
-                    called_url = mock_client.get.call_args[0][0]
-                    assert called_url == f"{mock_config['hass_url']}/api/states/light.living_room"
+            # Verify API was called correctly
+            mock_client.get.assert_called_once()
+            called_url = mock_client.get.call_args[0][0]
+            assert called_url == f"{mock_config['hass_url']}/api/states/light.living_room"
 
     @pytest.mark.asyncio
     async def test_call_service(self, mock_config):
@@ -97,24 +101,24 @@ class TestHassAPI:
         mock_client.post = AsyncMock(return_value=mock_response)
 
         # Patch the client
-        with patch("app.hass.get_client", return_value=mock_client):
-            with patch("app.hass.HA_URL", mock_config["hass_url"]):
-                with patch("app.hass.HA_TOKEN", mock_config["hass_token"]):
-                    # Test function
-                    result = await call_service(domain, service, data)
+        with (
+            patch("app.hass.get_client", return_value=mock_client),
+            patch("app.hass.HA_URL", mock_config["hass_url"]),
+            patch("app.hass.HA_TOKEN", mock_config["hass_token"]),
+        ):
+            # Test function
+            result = await call_service(domain, service, data)
 
-                    # Assertions
-                    assert isinstance(result, dict)
-                    assert result["result"] == "ok"
+            # Assertions
+            assert isinstance(result, dict)
+            assert result["result"] == "ok"
 
-                    # Verify API was called correctly
-                    mock_client.post.assert_called_once()
-                    called_url = mock_client.post.call_args[0][0]
-                    called_data = mock_client.post.call_args[1].get("json")
-                    assert (
-                        called_url == f"{mock_config['hass_url']}/api/services/{domain}/{service}"
-                    )
-                    assert called_data == data
+            # Verify API was called correctly
+            mock_client.post.assert_called_once()
+            called_url = mock_client.post.call_args[0][0]
+            called_data = mock_client.post.call_args[1].get("json")
+            assert called_url == f"{mock_config['hass_url']}/api/services/{domain}/{service}"
+            assert called_data == data
 
     @pytest.mark.asyncio
     async def test_get_automations(self, mock_config):
@@ -137,35 +141,35 @@ class TestHassAPI:
         ]
 
         # Patch the token to avoid the "No token" error
-        with patch("app.hass.HA_TOKEN", mock_config["hass_token"]):
-            with patch("app.hass.HA_URL", mock_config["hass_url"]):
-                # For get_automations we need to mock the get_entities function
-                with patch("app.hass.get_entities", AsyncMock(return_value=mock_automation_states)):
-                    # Test function
-                    automations = await get_automations()
+        with (
+            patch("app.hass.HA_TOKEN", mock_config["hass_token"]),
+            patch("app.hass.HA_URL", mock_config["hass_url"]),
+            patch("app.hass.get_entities", AsyncMock(return_value=mock_automation_states)),
+        ):
+            # Test function
+            automations = await get_automations()
 
-                    # Assertions
-                    assert isinstance(automations, list)
-                    assert len(automations) == 2
+            # Assertions
+            assert isinstance(automations, list)
+            assert len(automations) == 2
 
-                    # Verify contents of first automation
-                    assert automations[0]["entity_id"] == "automation.morning_lights"
-                    assert automations[0]["state"] == "on"
-                    assert automations[0]["alias"] == "Turn on lights in the morning"
-                    assert automations[0]["last_triggered"] == "2025-03-15T07:00:00Z"
+            # Verify contents of first automation
+            assert automations[0]["entity_id"] == "automation.morning_lights"
+            assert automations[0]["state"] == "on"
+            assert automations[0]["alias"] == "Turn on lights in the morning"
+            assert automations[0]["last_triggered"] == "2025-03-15T07:00:00Z"
 
-                # Test error response
-                with patch(
-                    "app.hass.get_entities",
-                    AsyncMock(return_value={"error": "HTTP error: 404 - Not Found"}),
-                ):
-                    # Test function with error
-                    automations = await get_automations()
+        # Test error response
+        with patch(
+            "app.hass.get_entities",
+            AsyncMock(return_value={"error": "HTTP error: 404 - Not Found"}),
+        ):
+            # Test function with error
+            automations = await get_automations()
 
-                    # In our new implementation, it should pass through the error
-                    assert isinstance(automations, dict)
-                    assert "error" in automations
-                    assert "404" in automations["error"]
+            # In our new implementation, it should return empty list for errors
+            assert isinstance(automations, list)
+            assert len(automations) == 0
 
     @pytest.mark.asyncio
     async def test_get_entity_history(self, mock_config):
@@ -199,25 +203,27 @@ class TestHassAPI:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         # Patch the client and HA_URL/HA_TOKEN
-        with patch("app.hass.get_client", return_value=mock_client):
-            with patch("app.hass.HA_URL", mock_config["hass_url"]):
-                with patch("app.hass.HA_TOKEN", mock_config["hass_token"]):
-                    from app.hass import get_entity_history
+        with (
+            patch("app.hass.get_client", return_value=mock_client),
+            patch("app.hass.HA_URL", mock_config["hass_url"]),
+            patch("app.hass.HA_TOKEN", mock_config["hass_token"]),
+        ):
+            from app.hass import get_entity_history
 
-                    history = await get_entity_history(entity_id, hours)
+            history = await get_entity_history(entity_id, hours)
 
-                    # Assertions
-                    assert isinstance(history, list)
-                    assert len(history) == 1  # History API returns list of lists
-                    assert len(history[0]) == 2
-                    assert history[0][0]["state"] == "25.0"  # type: ignore[index]
-                    assert history[0][1]["state"] == "26.0"  # type: ignore[index]
+            # Assertions
+            assert isinstance(history, list)
+            assert len(history) == 1  # History API returns list of lists
+            assert len(history[0]) == 2
+            assert history[0][0]["state"] == "25.0"  # type: ignore[index]
+            assert history[0][1]["state"] == "26.0"  # type: ignore[index]
 
-                    # Verify API was called correctly
-                    mock_client.get.assert_called_once()
-                    called_url = mock_client.get.call_args[0][0]
-                    assert f"{mock_config['hass_url']}/api/history/period/" in called_url
-                    assert mock_client.get.call_args[1]["params"]["filter_entity_id"] == entity_id
+            # Verify API was called correctly
+            mock_client.get.assert_called_once()
+            called_url = mock_client.get.call_args[0][0]
+            assert f"{mock_config['hass_url']}/api/history/period/" in called_url
+            assert mock_client.get.call_args[1]["params"]["filter_entity_id"] == entity_id
 
     def test_handle_api_errors_decorator(self):
         """Test the handle_api_errors decorator."""
@@ -242,3 +248,30 @@ class TestHassAPI:
         # Verify that both functions have a docstring
         assert test_dict_function.__doc__ == "Test function that returns a dict."
         assert test_str_function.__doc__ == "Test function that returns a string."
+
+    async def test_handle_api_errors_http_status_error_regression(self):
+        """Regression test: HTTP errors should return dict for functions with dict return type."""
+        from typing import Any
+        from unittest.mock import MagicMock, patch
+
+        import httpx
+
+        # Mock the HA_TOKEN to bypass the token check
+        with patch("app.hass.HA_TOKEN", "fake_token"):
+
+            @handle_api_errors
+            async def mock_call_service() -> dict[str, Any]:
+                """Mock function that simulates call_service with dict return type."""
+                # Simulate an HTTP 400 error like the original issue
+                response = MagicMock()
+                response.status_code = 400
+                response.reason_phrase = "Bad Request"
+                raise httpx.HTTPStatusError("HTTP error", request=MagicMock(), response=response)
+
+            # This should return a dict with error, not raise an exception or return a string
+            result = await mock_call_service()
+
+            # Verify the result is the expected dict format
+            assert isinstance(result, dict), f"Expected dict, got {type(result)}"
+            assert "error" in result, f"Expected 'error' key in result: {result}"
+            assert "HTTP error: 400 - Bad Request" in result["error"]
